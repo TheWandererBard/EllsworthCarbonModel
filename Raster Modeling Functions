@@ -1,0 +1,74 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import arcpy
+import pandas
+from sklearn.ensemble import RandomForestRegressor
+
+#Carbon predictor heatmap raster generator using raster predictor variables
+#Most notably are Elevation, Aspect and Slope.
+
+#First we define all functions. Comments throughout of their use-cases
+
+# First we must convert all input rasters into numpy arrays.
+# This stores the raster values as indecies of an array of the same size as the raster resolution.
+# We also capture the necessary variables for turning a similarly sized array 
+# back into a raster and maintaining coordinate systems.
+def RasterToArry(InputRaster):
+    #Turns input raster into array
+    #Outputs -> Array & (lowerleft, cellSize) for coordinates for return to raster
+    Raster=arcpy.Raster(InputRaster)
+    lowerLeft = arcpy.Point(Raster.extent.XMin,Raster.extent.YMin)
+    cellSize = Raster.meanCellWidth
+    NpArry=arcpy.RasterToNumPyArray(Raster)
+    return NpArry, lowerLeft, cellSize
+
+# This builds out our dependent variable feature class (points) to sample the independent rasters
+def SampleEleAspSlp(Points, InputEle, InputAsp, InputSlp):
+    #Overwrites & edits previous point featureset
+    EleRasterName=InputEle+" Elevation;"
+    AspRasterName=InputAsp+" Aspect;"
+    SlpRasterName=InputSlp+" Slope"
+    arcpy.sa.ExtractMultiValuesToPoints(
+        in_point_features=Points,
+        in_rasters=EleRasterName+AspRasterName+SlpRasterName,
+        bilinear_interpolate_values="NONE"
+    )
+
+def FCtoArry(fc,fc_size,fields):
+    #fc -> feature class
+    #fc_size -> length of feature class
+    #fields -> list ["",""] of fields for arry, typically first is dept var.
+             
+    fc_arry=np.zeros((fc_size,len(fields)))
+    with arcpy.da.SearchCursor(fc, fields) as cursor:
+        i=0
+        for row in cursor:
+            newrow=np.array((row[0:len(fields)]))
+            fc_arry[i]=newrow
+            i+=1
+    return fc_arry    
+    
+def ModelRF(fc_arry,n_trees):
+    #Generates a RF Model from fc_arry. Input arry and number of trees (~1000).
+    #Outputs regressor model and OOB score value.
+    IND = fc_arry[:,1:]
+    DEP = fc_arry[:,0]
+    regressor = RandomForestRegressor(n_estimators=n_trees,oob_score=True)
+    regressor.fit(IND,DEP)  
+    score=regressor.score(IND,DEP,sample_weight=None)
+    return regressor, score
+
+
+def ArryToRaster(InputArry,lowerLeft, cellSize):
+     #Turns input arry into raster. Requires (lowerleft, cellSize) from original raster
+     Raster=arcpy.NumPyArrayToRaster(InputArry,lowerLeft,cellSize)
+     return Raster
+
+def GenPredictArry(RFModel,EleArry,SlpArry,AspArry):
+    dims = EleArry.shape
+    PredictArry=np.zeros(dims)
+    for i in range(dims[0]):
+        for j in range(dims[1]):
+            SamplePoint=[[EleArry[i,j], SlpArry[i,j], AspArry[i,j]]]
+            PredictArry[i,j]=RFModel.predict(SamplePoint)
+    return PredictArry
